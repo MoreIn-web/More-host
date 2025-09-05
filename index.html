@@ -1,0 +1,424 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>MoreHost — Code Hosting & IDE (Single File)</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>tailwind.config = { theme: { extend: { colors: { brand:'#111827' } } } }</script>
+  <!-- Monaco Editor -->
+  <script>
+    window.MonacoEnvironment = { getWorkerUrl: function () {
+      const code = `self.MonacoEnvironment = { baseUrl: 'https://cdn.jsdelivr.net/npm/monaco-editor@0.47.0/min/' };\nimportScripts('https://cdn.jsdelivr.net/npm/monaco-editor@0.47.0/min/vs/base/worker/workerMain.js');`;
+      return URL.createObjectURL(new Blob([code], { type: 'text/javascript' }));
+    }};
+  </script>
+  <script src="https://cdn.jsdelivr.net/npm/monaco-editor@0.47.0/min/vs/loader.min.js"></script>
+  <!-- Markdown + Highlight (for README etc.) -->
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css"/>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+  <!-- Utilities -->
+  <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/idb-keyval@6/dist/umd.js"></script>
+  <style>
+    html, body { height: 100%; }
+    .glass { background: rgba(255,255,255,.08); backdrop-filter: blur(6px); }
+    .shimmer { position: relative; overflow: hidden; }
+    .shimmer::after{ content:''; position:absolute; inset:-200% -50%; transform:rotate(15deg); background: linear-gradient(90deg, transparent, rgba(255,255,255,.15), transparent); animation: shine 2s infinite; }
+    @keyframes shine{ 0%{ transform: translateX(-100%) rotate(15deg);} 100%{ transform: translateX(100%) rotate(15deg);} }
+    .pulse-glow { box-shadow: 0 0 0 0 rgba(17,24,39,.5); animation: pulse 1.4s ease-in-out infinite; }
+    @keyframes pulse { 0% { box-shadow: 0 0 0 0 rgba(17,24,39,.35);} 70% { box-shadow: 0 0 0 18px rgba(17,24,39,0);} 100% { box-shadow: 0 0 0 0 rgba(17,24,39,0);} }
+    .prose pre { white-space: pre; overflow: auto; }
+  </style>
+</head>
+<body class="bg-gray-50 text-gray-900">
+  <!-- ======================= 1) LOADING SCREEN ======================= -->
+  <div id="screen-loading" class="fixed inset-0 flex items-center justify-center bg-white z-50">
+    <div class="flex flex-col items-center gap-6">
+      <!-- Your first uploaded LOGO goes here -->
+      <div class="p-6 rounded-full border border-gray-200 pulse-glow">
+        <img src="assets/logo.png" alt="MoreHost" class="w-16 h-16 object-contain"/>
+      </div>
+      <div class="text-center">
+        <div class="w-56 h-2 bg-gray-200 rounded-full overflow-hidden shimmer"></div>
+        <p class="mt-3 text-sm text-gray-500">Preparing MoreHost…</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- ======================= 2) LANDING (Hosting banner) ======================= -->
+  <main id="screen-landing" class="hidden min-h-screen relative flex items-center justify-center">
+    <img src="assets/landing-hosting.png" alt="MoreHost Landing" class="absolute inset-0 w-full h-full object-cover opacity-95 pointer-events-none"/>
+    <div class="relative z-10 max-w-3xl mx-auto text-center px-6">
+      <h1 class="text-5xl md:text-6xl font-extrabold text-white drop-shadow">MoreHost</h1>
+      <p class="mt-3 text-white/90 text-lg">Host your code repositories and collaborate with others.</p>
+      <div class="mt-8 flex items-center justify-center gap-3">
+        <button id="btn-to-signup" class="px-5 py-2.5 rounded-xl bg-white text-gray-900 font-semibold">Sign up</button>
+        <button id="btn-to-signin" class="px-5 py-2.5 rounded-xl border border-white/70 text-white font-semibold">Sign in</button>
+      </div>
+    </div>
+  </main>
+
+  <!-- ======================= 3) AUTH (space theme) ======================= -->
+  <section id="screen-auth" class="hidden min-h-screen grid place-items-center relative">
+    <div class="absolute inset-0 -z-10 bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-indigo-900 via-black to-black"></div>
+    <div class="absolute inset-0 -z-10" style="background-image:url('assets/space-noise.png'); opacity:.15"></div>
+
+    <div class="w-full max-w-md bg-white/10 glass rounded-3xl border border-white/20 p-6 text-white">
+      <div class="flex flex-col items-center">
+        <img id="auth-avatar-preview" src="assets/profile-placeholder.svg" class="w-20 h-20 rounded-full object-cover border border-white/20 mb-3 bg-white/10" alt="avatar"/>
+        <label class="text-sm opacity-90 mb-3 cursor-pointer">
+          <input id="auth-avatar" type="file" accept="image/*" class="hidden" />Choose your profile pic
+        </label>
+      </div>
+      <div class="space-y-3">
+        <input id="auth-name" class="w-full px-4 py-2 rounded-xl bg-white/10 border border-white/20 placeholder-white/60 focus:outline-none" placeholder="Enter name"/>
+        <input id="auth-pass" type="password" class="w-full px-4 py-2 rounded-xl bg-white/10 border border-white/20 placeholder-white/60 focus:outline-none" placeholder="Enter password"/>
+        <button id="btn-auth-action" class="w-full px-4 py-2.5 rounded-xl bg-white text-gray-900 font-semibold">Continue</button>
+        <button id="btn-switch-auth" class="w-full px-4 py-2 rounded-xl bg-transparent border border-white/30">Switch to Sign in</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ======================= 4) DASHBOARD (projects list) ======================= -->
+  <section id="screen-dash" class="hidden min-h-screen relative">
+    <img src="assets/dashboard-host.png" class="absolute inset-0 w-full h-full object-cover opacity-20" alt="dash bg"/>
+    <div class="relative z-10 max-w-6xl mx-auto px-4 py-6">
+      <div class="flex items-center justify-between mb-6">
+        <div class="flex items-center gap-3">
+          <img src="assets/logo.png" class="w-8 h-8"/>
+          <div>
+            <div class="font-bold text-xl">MoreHost</div>
+            <div id="whoami" class="text-xs text-gray-500"></div>
+          </div>
+        </div>
+        <div class="flex items-center gap-2">
+          <button id="btn-new-project" class="px-4 py-2 rounded-xl bg-gray-900 text-white">New Project</button>
+          <button id="btn-logout" class="px-4 py-2 rounded-xl bg-gray-100">Sign out</button>
+        </div>
+      </div>
+
+      <div id="projects-empty" class="text-center text-gray-500 py-20 hidden">No projects yet. Click <b>New Project</b> to create one.</div>
+      <div id="projects-grid" class="grid sm:grid-cols-2 lg:grid-cols-3 gap-4"></div>
+    </div>
+  </section>
+
+  <!-- ======================= 5) WORKSPACE ======================= -->
+  <section id="screen-work" class="hidden min-h-screen flex flex-col">
+    <!-- Topbar -->
+    <div class="bg-white border-b px-4 py-2 flex items-center gap-3">
+      <img src="assets/logo.png" class="w-6 h-6"/>
+      <div class="font-semibold">MoreHost</div>
+      <div class="text-gray-400">/</div>
+      <div id="crumb-project" class="font-mono text-sm"></div>
+      <div class="ml-auto flex items-center gap-2">
+        <button id="btn-add-file" class="px-3 py-1.5 rounded-lg bg-gray-100">Add File</button>
+        <button id="btn-add-folder" class="px-3 py-1.5 rounded-lg bg-gray-100">Add Folder</button>
+        <button id="btn-run" class="px-3 py-1.5 rounded-lg bg-green-600 text-white">Run</button>
+        <button id="btn-preview" class="px-3 py-1.5 rounded-lg bg-blue-600 text-white">Preview</button>
+        <button id="btn-back-dash" class="px-3 py-1.5 rounded-lg bg-gray-100">Back</button>
+      </div>
+    </div>
+
+    <!-- Body -->
+    <div class="flex-1 grid grid-cols-12 gap-3 p-3">
+      <!-- Explorer -->
+      <aside class="col-span-3 bg-white border rounded-2xl p-3 overflow-auto">
+        <div class="font-semibold mb-2">Explorer</div>
+        <div id="tree" class="text-sm"></div>
+      </aside>
+
+      <!-- Editor + Output -->
+      <main class="col-span-6 flex flex-col gap-3">
+        <div class="bg-white border rounded-2xl p-2">
+          <div class="flex items-center gap-2">
+            <div class="font-semibold">Editor</div>
+            <span id="current-file" class="text-xs text-gray-500"></span>
+          </div>
+          <div id="editor" class="mt-2 h-[52vh] rounded-xl overflow-hidden"></div>
+        </div>
+        <div class="bg-white border rounded-2xl p-2">
+          <div class="flex items-center gap-2">
+            <div class="font-semibold">Console</div>
+            <button id="btn-clear" class="ml-auto px-2 py-1 rounded-lg bg-gray-100 text-sm">Clear</button>
+          </div>
+          <pre id="console" class="mt-2 h-[26vh] bg-black text-green-300 text-xs p-3 rounded-xl overflow-auto"></pre>
+        </div>
+      </main>
+
+      <!-- Preview / README -->
+      <aside class="col-span-3 bg-white border rounded-2xl p-3 overflow-auto">
+        <div class="flex items-center justify-between">
+          <div class="font-semibold">Preview</div>
+          <button id="btn-open-readme" class="px-2 py-1 rounded-lg bg-gray-100 text-sm">README</button>
+        </div>
+        <iframe id="preview" class="mt-2 w-full h-[78vh] border rounded-xl"></iframe>
+        <article id="readme" class="prose max-w-none hidden"></article>
+      </aside>
+    </div>
+  </section>
+
+  <!-- ======================= APP SCRIPT ======================= -->
+  <script>
+    // ---------- Helpers ----------
+    const $ = sel => document.querySelector(sel);
+    const $$ = sel => Array.from(document.querySelectorAll(sel));
+    const storage = {
+      get(key, def){ try{ return JSON.parse(localStorage.getItem(key)) ?? def }catch{ return def } },
+      set(key, val){ localStorage.setItem(key, JSON.stringify(val)); }
+    };
+
+    // ---------- Screens mgmt ----------
+    function show(id){ ['screen-landing','screen-auth','screen-dash','screen-work'].forEach(s=> $('#'+s).classList.add('hidden')); $('#'+id).classList.remove('hidden'); }
+
+    // ---------- Auth ----------
+    let authMode = 'signup';
+    let currentUser = null; // {name, passHash, avatarDataUrl}
+
+    async function hash(str){
+      const enc = new TextEncoder().encode(str);
+      const buf = await crypto.subtle.digest('SHA-256', enc);
+      return Array.from(new Uint8Array(buf)).map(b=>b.toString(16).padStart(2,'0')).join('');
+    }
+
+    function loadSession(){ currentUser = storage.get('morehost.session', null); }
+    function saveSession(){ storage.set('morehost.session', currentUser); }
+
+    function users(){ return storage.get('morehost.users', []); }
+    function saveUsers(list){ storage.set('morehost.users', list); }
+
+    function projects(){ return storage.get('morehost.projects', {}); } // { username: [ {name, files} ] }
+    function saveProjects(obj){ storage.set('morehost.projects', obj); }
+
+    // ---------- Loading → Landing ----------
+    window.addEventListener('load', () => {
+      setTimeout(()=>{ // small delay for effect
+        $('#screen-loading').classList.add('hidden');
+        loadSession();
+        if(currentUser) { renderDash(); show('screen-dash'); }
+        else { show('screen-landing'); }
+      }, 800);
+    });
+
+    // ---------- Landing actions ----------
+    $('#btn-to-signup').addEventListener('click', ()=>{ authMode='signup'; $('#btn-auth-action').textContent='Sign Up'; $('#btn-switch-auth').textContent='Switch to Sign in'; show('screen-auth'); });
+    $('#btn-to-signin').addEventListener('click', ()=>{ authMode='signin'; $('#btn-auth-action').textContent='Sign In'; $('#btn-switch-auth').textContent='Switch to Sign up'; show('screen-auth'); });
+
+    // Avatar preview
+    $('#auth-avatar').addEventListener('change', (e)=>{
+      const f = e.target.files[0]; if(!f) return;
+      const reader = new FileReader(); reader.onload = ev => { $('#auth-avatar-preview').src = ev.target.result; }; reader.readAsDataURL(f);
+    });
+
+    // Switch auth mode
+    $('#btn-switch-auth').addEventListener('click', ()=>{
+      if(authMode==='signup'){ authMode='signin'; $('#btn-auth-action').textContent='Sign In'; $('#btn-switch-auth').textContent='Switch to Sign up'; }
+      else { authMode='signup'; $('#btn-auth-action').textContent='Sign Up'; $('#btn-switch-auth').textContent='Switch to Sign in'; }
+    });
+
+    // Do auth
+    $('#btn-auth-action').addEventListener('click', async ()=>{
+      const name = $('#auth-name').value.trim();
+      const pass = $('#auth-pass').value;
+      if(!name || !pass) return alert('Name & password required');
+      const passHash = await hash(pass);
+      let list = users();
+      if(authMode==='signup'){
+        if(list.find(u=>u.name===name)) return alert('User exists');
+        const avatar = $('#auth-avatar-preview').src;
+        const u = { name, passHash, avatar };
+        list.push(u); saveUsers(list); currentUser = u; saveSession();
+      } else {
+        const u = list.find(u=>u.name===name && u.passHash===passHash);
+        if(!u) return alert('Invalid credentials');
+        currentUser = u; saveSession();
+      }
+      renderDash(); show('screen-dash');
+    });
+
+    // ---------- Dashboard ----------
+    function renderDash(){
+      $('#whoami').textContent = currentUser ? '@'+currentUser.name : '';
+      const pg = projects();
+      const arr = pg[currentUser.name] || [];
+      $('#projects-grid').innerHTML = '';
+      if(arr.length===0) $('#projects-empty').classList.remove('hidden'); else $('#projects-empty').classList.add('hidden');
+      arr.forEach((p,idx)=>{
+        const card = document.createElement('div');
+        card.className = 'bg-white border rounded-2xl p-4 hover:shadow cursor-pointer flex flex-col';
+        card.innerHTML = `
+          <div class="flex items-center gap-2 mb-2">
+            <span class="inline-flex h-8 w-8 rounded-lg bg-gray-100 items-center justify-center">📁</span>
+            <div>
+              <div class="font-semibold">${p.name}</div>
+              <div class="text-xs text-gray-500">@${currentUser.name}/${slugify(p.name)}</div>
+            </div>
+          </div>
+          <div class="text-xs text-gray-500 mt-auto">${Object.keys(p.files).filter(k=>!k.endsWith('/')).length} files</div>`;
+        card.addEventListener('click', ()=> openProject(idx));
+        $('#projects-grid').appendChild(card);
+      });
+    }
+
+    function slugify(s){ return s.toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/(^-|-$)/g,''); }
+
+    $('#btn-new-project').addEventListener('click', ()=>{
+      const name = prompt('Project name (like GitHub repo):');
+      if(!name) return;
+      const pg = projects();
+      const proj = {
+        name,
+        files: {
+          'README.md': {type:'file', content: `# ${name}\n\nWelcome to your project on MoreHost.`},
+          'index.html': {type:'file', content: '<!doctype html>\n<html><head><title>'+name+'</title></head><body><h1>'+name+'</h1><script src="script.js"><\/script></body></html>'},
+          'style.css': {type:'file', content: 'body{font-family:system-ui} h1{color:#111}'},
+          'script.js': {type:'file', content: 'console.log("Hello from \\''+name+'\\'")'}
+        }
+      };
+      pg[currentUser.name] = pg[currentUser.name] || [];
+      pg[currentUser.name].push(proj); saveProjects(pg); renderDash();
+    });
+
+    $('#btn-logout').addEventListener('click', ()=>{ currentUser = null; saveSession(); show('screen-landing'); });
+
+    // ---------- Workspace ----------
+    let currentProjectIndex = -1;
+    let currentPath = '';
+    let editor, monacoRef;
+
+    require.config({ paths: { 'vs': 'https://cdn.jsdelivr.net/npm/monaco-editor@0.47.0/min/vs' } });
+    require(['vs/editor/editor.main'], function(){
+      monacoRef = window.monaco;
+      editor = monacoRef.editor.create($('#editor'), { value:'', language:'javascript', automaticLayout:true, theme:'vs', minimap:{enabled:false}, fontSize:14 });
+    });
+
+    function openProject(index){
+      currentProjectIndex = index;
+      const proj = projects()[currentUser.name][index];
+      $('#crumb-project').textContent = '@'+currentUser.name+'/'+slugify(proj.name);
+      renderTree();
+      // open readme by default
+      openFile('README.md');
+      show('screen-work');
+    }
+
+    function proj(){ return projects()[currentUser.name][currentProjectIndex]; }
+    function updateProj(updater){ const all = projects(); updater(all[currentUser.name][currentProjectIndex]); saveProjects(all); }
+
+    function isFolder(path){ return proj().files[path] && proj().files[path].type==='folder'; }
+
+    function renderTree(){
+      const container = $('#tree'); container.innerHTML = '';
+      const entries = Object.keys(proj().files).sort();
+      // build hierarchical map
+      const root = {};
+      for(const key of entries){
+        const isDir = key.endsWith('/');
+        const parts = key.split('/').filter(Boolean);
+        let node = root;
+        for(let i=0;i<parts.length;i++){
+          const part = parts[i]+(i===parts.length-1 && isDir ? '/' : '');
+          node.children = node.children || {};
+          node.children[part] = node.children[part] || { path: (node.path?node.path:'')+part, dir: part.endsWith('/'), children:{} };
+          node = node.children[part];
+        }
+        if(!isDir) node.path = key;
+      }
+      function draw(node, wrap){
+        if(!node.children) return;
+        for(const [name,child] of Object.entries(node.children)){
+          const row = document.createElement('div');
+          row.className = 'flex items-center justify-between px-2 py-1 rounded-lg hover:bg-gray-50';
+          row.innerHTML = `<div class="flex items-center gap-2">
+            <span>${child.dir?'📂':'📄'}</span>
+            <button class="truncate hover:underline" data-open="${child.path}">${name}</button></div>
+            <div class="flex gap-1">${child.dir?'':`<button class='px-2 text-xs bg-gray-100 rounded' data-edit='${child.path}'>Edit</button>`}
+            <button class='px-2 text-xs bg-gray-100 rounded' data-del='${child.path}'>Del</button></div>`;
+          wrap.appendChild(row);
+          if(child.dir){ const inner = document.createElement('div'); inner.className='ml-3 border-l pl-2'; wrap.appendChild(inner); draw(child, inner); }
+        }
+      }
+      draw(root, container);
+    }
+
+    $('#tree').addEventListener('click', (e)=>{
+      const open = e.target.closest('[data-open]')?.dataset.open;
+      const edit = e.target.closest('[data-edit]')?.dataset.edit;
+      const del = e.target.closest('[data-del]')?.dataset.del;
+      if(open){ if(!open.endsWith('/')) openFile(open); }
+      else if(edit){ openFile(edit); }
+      else if(del){ if(confirm('Delete '+del+'?')){ updateProj(p=>{ delete p.files[del]; if(del.endsWith('/')){ Object.keys(p.files).forEach(k=>{ if(k.startsWith(del)) delete p.files[k]; }); } }); renderTree(); } }
+    });
+
+    function setEditorLangByExt(path){
+      const ext = path.split('.').pop().toLowerCase();
+      const map = { js:'javascript', html:'html', css:'css', md:'markdown', json:'json' };
+      const lang = map[ext] || 'plaintext';
+      monacoRef.editor.setModelLanguage(editor.getModel(), lang);
+    }
+
+    function openFile(path){
+      currentPath = path;
+      const meta = proj().files[path]; if(!meta) return;
+      $('#current-file').textContent = path;
+      editor.setValue(meta.content || '');
+      setEditorLangByExt(path);
+      if(path==='README.md') renderReadme();
+    }
+
+    // Add File / Folder (requires name)
+    $('#btn-add-file').addEventListener('click', ()=>{
+      const name = prompt('File name (e.g., src/app.js)');
+      if(!name) return alert('File name required');
+      updateProj(p=>{ if(p.files[name]) return alert('Already exists'); p.files[name] = {type:'file', content:''}; });
+      renderTree(); openFile(name);
+    });
+    $('#btn-add-folder').addEventListener('click', ()=>{
+      let name = prompt('Folder name (end with /)'); if(!name) return; if(!name.endsWith('/')) name += '/';
+      updateProj(p=>{ if(p.files[name]) return alert('Already exists'); p.files[name] = {type:'folder'}; });
+      renderTree();
+    });
+
+    // Save on content change debounce
+    let saveTimer = null;
+    function saveCurrent(){ if(!currentPath) return; updateProj(p=>{ p.files[currentPath].content = editor.getValue(); }); }
+    editor?.onDidChangeModelContent?.(()=>{ clearTimeout(saveTimer); saveTimer=setTimeout(saveCurrent, 400); });
+
+    // README render
+    function renderReadme(){ const md = proj().files['README.md']?.content || ''; const el=$('#readme'); el.innerHTML = marked.parse(md); el.querySelectorAll('pre code').forEach(hljs.highlightElement); }
+    $('#btn-open-readme').addEventListener('click', ()=>{ const art=$('#readme'); const iframe=$('#preview'); if(art.classList.contains('hidden')){ renderReadme(); art.classList.remove('hidden'); iframe.classList.add('hidden'); } else { art.classList.add('hidden'); iframe.classList.remove('hidden'); } });
+
+    // Console helpers
+    function setConsole(t){ $('#console').textContent = t; $('#console').scrollTop = $('#console').scrollHeight; }
+    function appendConsole(l){ $('#console').textContent += l+"\n"; $('#console').scrollTop = $('#console').scrollHeight; }
+    $('#btn-clear').addEventListener('click', ()=> setConsole(''));
+
+    // Run (JS only)
+    $('#btn-run').addEventListener('click', ()=>{
+      if(!currentPath) return alert('Select a file');
+      saveCurrent();
+      const ext = currentPath.split('.').pop();
+      setConsole('');
+      if(ext!=='js'){ appendConsole('Run only supports .js files. Use Preview for HTML/CSS/JS.'); return; }
+      try{ const result = Function(proj().files[currentPath].content)(); if(result!==undefined) appendConsole(String(result)); } catch(e){ appendConsole('ERROR: '+e.message); }
+    });
+
+    // Preview (HTML+CSS+JS bundle)
+    $('#btn-preview').addEventListener('click', ()=>{
+      saveCurrent();
+      const f = proj().files;
+      const html = (f['index.html']?.content) || '<!doctype html><title>Preview</title><h1>Missing index.html</h1>';
+      const css = f['style.css']?.content || '';
+      const js = f['script.js']?.content || '';
+      const page = html.replace('</head>', `<style>${css}</style></head>`).replace('</body>', `<script>${js}<\/script></body>`);
+      $('#readme').classList.add('hidden');
+      $('#preview').classList.remove('hidden');
+      $('#preview').srcdoc = page;
+    });
+
+    // Back to dash
+    $('#btn-back-dash').addEventListener('click', ()=>{ renderDash(); show('screen-dash'); });
+  </script>
+</body>
+</html>
