@@ -1,0 +1,644 @@
+# ┌───────────────────────────────────────────────────────────┐
+# │ GitHost MVP (Express + EJS + SQLite + Tailwind CDN)       │
+# │ Zero-budget friendly. Basic GitHub-like repo hosting.     │
+# └───────────────────────────────────────────────────────────┘
+#
+# Features
+# - Auth: signup/login/logout (email + password, bcrypt hashed)
+# - Repos: create public/private repos per user
+# - Files: upload, create, edit, delete; folder support
+# - Commits: simple version history per file (no real git; DB-backed)
+# - Viewer: code viewer with syntax highlight (highlight.js)
+# - Markdown: README.md rendered
+# - Public profile & repo pages (public repos only)
+# - Pro-looking UI using Tailwind (CDN), Lucide icons
+#
+# Structure (create these files/folders):
+# githost/
+#   package.json
+#   server.js
+#   db.js
+#   auth.js
+#   middleware.js
+#   /migrations/001_init.sql
+#   /public/
+#       /css/style.css
+#       /js/app.js
+#       /icons/lucide.min.js
+#   /views/
+#       layout.ejs
+#       home.ejs
+#       auth_login.ejs
+#       auth_signup.ejs
+#       dashboard.ejs
+#       repo_create.ejs
+#       repo_view.ejs
+#       file_view.ejs
+#       file_edit.ejs
+#       profile.ejs
+#   /storage/            (auto-created) 
+#
+# Commands
+#   npm install
+#   npm run dev
+#   (Open http://localhost:3000)
+
+// ===== package.json =====
+{
+  "name": "githost-mvp",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "node server.js",
+    "migrate": "node server.js migrate"
+  },
+  "dependencies": {
+    "bcrypt": "^5.1.1",
+    "better-sqlite3": "^9.4.0",
+    "cookie-parser": "^1.4.7",
+    "dayjs": "^1.11.13",
+    "ejs": "^3.1.10",
+    "express": "^4.19.2",
+    "express-fileupload": "^1.5.1",
+    "gray-matter": "^4.0.3",
+    "highlight.js": "^11.9.0",
+    "marked": "^12.0.2",
+    "nanoid": "^5.0.7",
+    "sanitize-filename": "^1.6.3"
+  }
+}
+
+// ===== db.js =====
+import Database from 'better-sqlite3';
+import fs from 'fs';
+
+export const db = new Database('githost.db');
+
+export function migrate() {
+  const sql = fs.readFileSync('./migrations/001_init.sql', 'utf8');
+  db.exec(sql);
+}
+
+export const q = {
+  userByEmail: db.prepare('SELECT * FROM users WHERE email = ?'),
+  userById: db.prepare('SELECT id, email, name, createdAt FROM users WHERE id = ?'),
+  createUser: db.prepare('INSERT INTO users (name,email,passHash) VALUES (?,?,?)'),
+  createRepo: db.prepare('INSERT INTO repos (ownerId, name, isPrivate, description) VALUES (?,?,?,?)'),
+  repoBySlug: db.prepare('SELECT r.*, u.name ownerName, u.email ownerEmail FROM repos r JOIN users u ON u.id=r.ownerId WHERE r.ownerId=? AND r.name=?'),
+  reposByOwner: db.prepare('SELECT * FROM repos WHERE ownerId = ? ORDER BY createdAt DESC'),
+  publicRepoByOwnerAndName: db.prepare('SELECT r.*, u.name ownerName FROM repos r JOIN users u ON r.ownerId=u.id WHERE u.name=? AND r.name=? AND r.isPrivate=0'),
+  publicReposByOwnerName: db.prepare('SELECT r.*, u.name ownerName FROM repos r JOIN users u ON r.ownerId=u.id WHERE u.name=? AND r.isPrivate=0 ORDER BY r.createdAt DESC'),
+  ownerByName: db.prepare('SELECT id, name FROM users WHERE name = ?'),
+  createFile: db.prepare('INSERT INTO files (repoId, path, isDir) VALUES (?,?,?)'),
+  getFile: db.prepare('SELECT * FROM files WHERE repoId=? AND path=?'),
+  listFiles: db.prepare('SELECT * FROM files WHERE repoId=? AND path LIKE ? ORDER BY path ASC'),
+  writeVersion: db.prepare('INSERT INTO versions (fileId, content, message, authorId) VALUES (?,?,?,?)'),
+  listVersions: db.prepare('SELECT v.*, u.name authorName FROM versions v LEFT JOIN users u ON v.authorId=u.id WHERE fileId=? ORDER BY createdAt DESC'),
+  latestVersion: db.prepare('SELECT * FROM versions WHERE fileId=? ORDER BY createdAt DESC LIMIT 1')
+}
+
+// ===== auth.js =====
+import bcrypt from 'bcrypt';
+import { q, db } from './db.js';
+
+export async function signup({ name, email, password }) {
+  const exists = q.userByEmail.get(email);
+  if (exists) throw new Error('Email already in use');
+  const passHash = await bcrypt.hash(password, 10);
+  const info = q.createUser.run(name, email, passHash);
+  return { id: info.lastInsertRowid, name, email };
+}
+
+export async function login({ email, password }) {
+  const u = q.userByEmail.get(email);
+  if (!u) throw new Error('Invalid credentials');
+  const ok = await bcrypt.compare(password, u.passHash);
+  if (!ok) throw new Error('Invalid credentials');
+  return { id: u.id, name: u.name, email: u.email };
+}
+
+// ===== middleware.js =====
+export function requireAuth(req, res, next) {
+  if (!req.user) return res.redirect('/login?next=' + encodeURIComponent(req.originalUrl));
+  next();
+}
+
+export function attachUser(req, res, next) {
+  const uid = req.signedCookies.uid;
+  if (uid) req.user = { id: Number(uid), name: req.signedCookies.uname };
+  else req.user = null;
+  res.locals.me = req.user;
+  next();
+}
+
+// ===== migrations/001_init.sql =====
+PRAGMA foreign_keys = ON;
+
+CREATE TABLE IF NOT EXISTS users (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL UNIQUE,
+  email TEXT NOT NULL UNIQUE,
+  passHash TEXT NOT NULL,
+  createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS repos (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  ownerId INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  isPrivate INTEGER NOT NULL DEFAULT 0,
+  description TEXT,
+  createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(ownerId, name)
+);
+
+CREATE TABLE IF NOT EXISTS files (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  repoId INTEGER NOT NULL REFERENCES repos(id) ON DELETE CASCADE,
+  path TEXT NOT NULL,
+  isDir INTEGER NOT NULL DEFAULT 0,
+  createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(repoId, path)
+);
+
+CREATE TABLE IF NOT EXISTS versions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  fileId INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+  content BLOB,
+  message TEXT,
+  authorId INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+-- seed: none
+
+// ===== server.js =====
+import express from 'express';
+import fileUpload from 'express-fileupload';
+import cookieParser from 'cookie-parser';
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
+import matter from 'gray-matter';
+import { marked } from 'marked';
+import { db, q, migrate } from './db.js';
+import { signup, login } from './auth.js';
+import { attachUser, requireAuth } from './middleware.js';
+import dayjs from 'dayjs';
+import sanitize from 'sanitize-filename';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const app = express();
+
+// CLI migrate
+if (process.argv[2] === 'migrate') {
+  migrate();
+  console.log('DB migrated.');
+  process.exit(0);
+}
+
+// Ensure storage dir
+const STORAGE = path.join(__dirname, 'storage');
+if (!fs.existsSync(STORAGE)) fs.mkdirSync(STORAGE);
+
+app.set('view engine', 'ejs');
+app.set('views', path.join(__dirname, 'views'));
+app.use(express.urlencoded({ extended: true }));
+app.use(express.json());
+app.use(cookieParser('super-secret-change-me'));
+app.use(attachUser);
+app.use(fileUpload());
+app.use('/public', express.static(path.join(__dirname, 'public')));
+
+// Helpers
+function repoRoot(repoId) { return path.join(STORAGE, String(repoId)); }
+function ensureDir(p) { fs.mkdirSync(p, { recursive: true }); }
+
+// Home
+app.get('/', (req, res) => {
+  res.render('home', { title: 'GitHost', dayjs });
+});
+
+// Auth
+app.get('/signup', (req, res) => res.render('auth_signup', { title: 'Create account' }));
+app.post('/signup', async (req, res) => {
+  try {
+    const { name, email, password } = req.body;
+    if (!name || !email || !password) throw new Error('All fields required');
+    const user = await signup({ name: name.trim(), email: email.trim().toLowerCase(), password });
+    res.cookie('uid', String(user.id), { signed: true, httpOnly: true });
+    res.cookie('uname', user.name, { signed: true });
+    res.redirect('/dashboard');
+  } catch (e) {
+    res.status(400).render('auth_signup', { title: 'Create account', error: e.message });
+  }
+});
+
+app.get('/login', (req, res) => res.render('auth_login', { title: 'Sign in', next: req.query.next || '/' }));
+app.post('/login', async (req, res) => {
+  try {
+    const { email, password } = req.body;
+    const user = await login({ email: email.trim().toLowerCase(), password });
+    res.cookie('uid', String(user.id), { signed: true, httpOnly: true });
+    res.cookie('uname', user.name, { signed: true });
+    res.redirect(req.query.next || '/dashboard');
+  } catch (e) {
+    res.status(400).render('auth_login', { title: 'Sign in', error: e.message, next: req.query.next || '/' });
+  }
+});
+
+app.post('/logout', (req, res) => {
+  res.clearCookie('uid');
+  res.clearCookie('uname');
+  res.redirect('/');
+});
+
+// Dashboard
+app.get('/dashboard', requireAuth, (req, res) => {
+  const repos = q.reposByOwner.all(req.user.id);
+  res.render('dashboard', { title: 'Dashboard', repos });
+});
+
+// Create repo
+app.get('/repo/new', requireAuth, (req, res) => {
+  res.render('repo_create', { title: 'New Repository' });
+});
+app.post('/repo/new', requireAuth, (req, res) => {
+  try {
+    const nameRaw = req.body.name?.trim();
+    if (!nameRaw) throw new Error('Repository name required');
+    const name = sanitize(nameRaw).replace(/\s+/g, '-');
+    const isPrivate = req.body.visibility === 'private' ? 1 : 0;
+    const desc = req.body.description?.slice(0, 500) || null;
+    const info = q.createRepo.run(req.user.id, name, isPrivate, desc);
+    const root = repoRoot(info.lastInsertRowid);
+    ensureDir(root);
+    // create a README
+    const repoId = info.lastInsertRowid;
+    const fileInfo = q.createFile.run(repoId, 'README.md', 0);
+    q.writeVersion.run(fileInfo.lastInsertRowid, '# ' + name + '\n', 'init: add README', req.user.id);
+    fs.writeFileSync(path.join(root, 'README.md'), '# ' + name + '\n');
+    res.redirect(`/@${res.locals.me.name}/${name}`);
+  } catch (e) {
+    res.status(400).render('repo_create', { title: 'New Repository', error: e.message });
+  }
+});
+
+// Profile (public)
+app.get('/@:user', (req, res) => {
+  const owner = q.ownerByName.get(req.params.user);
+  if (!owner) return res.status(404).render('home', { title: 'Not found', error: 'User not found' });
+  const repos = q.publicReposByOwnerName.all(req.params.user);
+  res.render('profile', { title: `${req.params.user}`, owner, repos });
+});
+
+// Repo view (public or private if owner)
+app.get('/@:user/:repo', (req, res) => {
+  const owner = q.ownerByName.get(req.params.user);
+  if (!owner) return res.status(404).render('home', { title: 'Not found', error: 'User not found' });
+  const repo = q.repoBySlug.get(owner.id, req.params.repo);
+  if (!repo) return res.status(404).render('home', { title: 'Not found', error: 'Repository not found' });
+  if (repo.isPrivate && (!req.user || req.user.id !== owner.id)) {
+    return res.status(403).render('home', { title: 'Forbidden', error: 'This repository is private.' });
+  }
+  const list = q.listFiles.all(repo.id, '%');
+  // read README
+  let readmeHtml = '';
+  const readme = q.getFile.get(repo.id, 'README.md');
+  if (readme) {
+    const v = q.latestVersion.get(readme.id);
+    const md = v?.content?.toString() || '';
+    readmeHtml = marked(md);
+  }
+  res.render('repo_view', { title: `${req.params.repo}`, owner, repo, files: list, readmeHtml });
+});
+
+// File view
+app.get('/@:user/:repo/blob/*', (req, res) => {
+  const [user, repoName] = [req.params.user, req.params.repo];
+  const owner = q.ownerByName.get(user);
+  if (!owner) return res.status(404).send('User not found');
+  const repo = q.repoBySlug.get(owner.id, repoName);
+  if (!repo) return res.status(404).send('Repo not found');
+  if (repo.isPrivate && (!req.user || req.user.id !== owner.id)) return res.status(403).send('Private');
+  const rel = req.params[0];
+  const file = q.getFile.get(repo.id, rel);
+  if (!file) return res.status(404).send('File not found');
+  const version = q.latestVersion.get(file.id);
+  const content = version?.content?.toString() || '';
+  res.render('file_view', { title: rel, owner, repo, file, content });
+});
+
+// Edit file (owner only)
+app.get('/@:user/:repo/edit/*', requireAuth, (req, res) => {
+  const [user, repoName] = [req.params.user, req.params.repo];
+  const owner = q.ownerByName.get(user);
+  if (!owner) return res.status(404).send('User not found');
+  if (owner.id !== req.user.id) return res.status(403).send('Forbidden');
+  const repo = q.repoBySlug.get(owner.id, repoName);
+  const rel = req.params[0];
+  const file = q.getFile.get(repo.id, rel);
+  if (!file) return res.status(404).send('File not found');
+  const version = q.latestVersion.get(file.id);
+  const content = version?.content?.toString() || '';
+  res.render('file_edit', { title: 'Edit ' + rel, owner, repo, file, content });
+});
+
+app.post('/@:user/:repo/edit/*', requireAuth, (req, res) => {
+  const [user, repoName] = [req.params.user, req.params.repo];
+  const owner = q.ownerByName.get(user);
+  if (!owner) return res.status(404).send('User not found');
+  if (owner.id !== req.user.id) return res.status(403).send('Forbidden');
+  const repo = q.repoBySlug.get(owner.id, repoName);
+  const rel = req.params[0];
+  const file = q.getFile.get(repo.id, rel);
+  if (!file) return res.status(404).send('File not found');
+  const message = (req.body.message || 'update').slice(0, 140);
+  const content = req.body.content || '';
+  q.writeVersion.run(file.id, content, message, req.user.id);
+  fs.writeFileSync(path.join(repoRoot(repo.id), rel), content);
+  res.redirect(`/@${owner.name}/${repo.name}/blob/${rel}`);
+});
+
+// Create file (owner only)
+app.post('/@:user/:repo/new-file', requireAuth, (req, res) => {
+  const owner = q.ownerByName.get(req.params.user);
+  if (!owner || owner.id !== req.user.id) return res.status(403).send('Forbidden');
+  const repo = q.repoBySlug.get(owner.id, req.params.repo);
+  const rel = sanitize(req.body.path || '').replace(/^\/+/, '');
+  if (!rel) return res.status(400).send('Path required');
+  const isDir = rel.endsWith('/');
+  try {
+    const info = q.createFile.run(repo.id, rel.replace(/\/$/, ''), isDir ? 1 : 0);
+    const p = path.join(repoRoot(repo.id), rel);
+    if (isDir) ensureDir(p);
+    else { ensureDir(path.dirname(p)); fs.writeFileSync(p, ''); q.writeVersion.run(info.lastInsertRowid, '', 'create file', req.user.id); }
+    res.redirect(`/@${owner.name}/${repo.name}`);
+  } catch (e) {
+    res.status(400).send('File exists or invalid');
+  }
+});
+
+// Upload
+app.post('/@:user/:repo/upload', requireAuth, (req, res) => {
+  const owner = q.ownerByName.get(req.params.user);
+  if (!owner || owner.id !== req.user.id) return res.status(403).send('Forbidden');
+  const repo = q.repoBySlug.get(owner.id, req.params.repo);
+  if (!req.files || !req.files.file) return res.status(400).send('No file');
+  const up = req.files.file;
+  const rel = sanitize(up.name);
+  const p = path.join(repoRoot(repo.id), rel);
+  ensureDir(path.dirname(p));
+  up.mv(p, (err) => {
+    if (err) return res.status(500).send('Upload failed');
+    try {
+      const info = q.createFile.run(repo.id, rel, 0);
+      q.writeVersion.run(info.lastInsertRowid, fs.readFileSync(p), 'upload', req.user.id);
+    } catch { /* file existed */ }
+    res.redirect(`/@${owner.name}/${repo.name}`);
+  });
+});
+
+// Versions (history)
+app.get('/@:user/:repo/history/*', (req, res) => {
+  const owner = q.ownerByName.get(req.params.user);
+  if (!owner) return res.status(404).send('User not found');
+  const repo = q.repoBySlug.get(owner.id, req.params.repo);
+  const file = q.getFile.get(repo.id, req.params[0]);
+  if (!file) return res.status(404).send('File not found');
+  const history = q.listVersions.all(file.id);
+  res.render('file_view', { title: 'History', owner, repo, file, content: '', history });
+});
+
+// Start
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log('GitHost running on http://localhost:' + PORT));
+
+// ===== public/css/style.css =====
+/* Tailwind utilities via CDN; here just small tweaks */
+pre code { white-space: pre-wrap; }
+
+// ===== public/js/app.js =====
+window.addEventListener('DOMContentLoaded', () => {
+  const m = document.querySelector('[data-auto-msg]');
+  if (m) setTimeout(() => m.remove(), 4000);
+});
+
+// ===== views/layout.ejs =====
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title><%= title %> · GitHost</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="/public/icons/lucide.min.js" defer></script>
+  <link rel="stylesheet" href="/public/css/style.css" />
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css"/>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+</head>
+<body class="bg-gray-50 text-gray-900">
+  <header class="border-b bg-white">
+    <div class="max-w-6xl mx-auto px-4 py-3 flex items-center justify-between">
+      <a href="/" class="font-bold text-xl">GitHost</a>
+      <nav class="flex gap-4 items-center">
+        <% if (me) { %>
+          <a href="/dashboard" class="hover:underline">Dashboard</a>
+          <form action="/logout" method="post" class="inline"><button class="px-3 py-1 rounded-lg bg-gray-100 hover:bg-gray-200">Logout</button></form>
+        <% } else { %>
+          <a href="/login" class="px-3 py-1 rounded-lg bg-gray-900 text-white">Sign in</a>
+          <a href="/signup" class="px-3 py-1 rounded-lg bg-gray-100">Sign up</a>
+        <% } %>
+      </nav>
+    </div>
+  </header>
+  <main class="max-w-6xl mx-auto px-4 py-6">
+    <% if (typeof error !== 'undefined') { %>
+      <div data-auto-msg class="mb-4 p-3 rounded-lg bg-red-50 text-red-700 border border-red-200"><%= error %></div>
+    <% } %>
+    <%- body %>
+  </main>
+  <script>hljs.highlightAll();</script>
+  <script src="/public/js/app.js"></script>
+</body>
+</html>
+
+// ===== views/home.ejs =====
+<% layout('layout') %>
+<section class="grid md:grid-cols-2 gap-8 items-center">
+  <div>
+    <h1 class="text-3xl md:text-4xl font-bold mb-3">Host your code. Share your work.</h1>
+    <p class="text-gray-600 mb-6">Minimal GitHub-like hosting with repos, files, and history. Free & local.</p>
+    <div class="flex gap-3">
+      <a href="/signup" class="px-4 py-2 rounded-xl bg-gray-900 text-white">Create account</a>
+      <a href="/login" class="px-4 py-2 rounded-xl bg-gray-100">Sign in</a>
+    </div>
+  </div>
+  <div class="bg-white rounded-2xl shadow p-4 border">
+    <div class="text-sm text-gray-500">Preview</div>
+    <div class="mt-2 p-3 bg-gray-50 rounded-xl border text-sm">
+      <div class="font-mono">/@username/my-repo</div>
+      <div class="mt-2 text-gray-600">README rendered here…</div>
+    </div>
+  </div>
+</section>
+
+// ===== views/auth_login.ejs =====
+<% layout('layout') %>
+<h1 class="text-2xl font-bold mb-4">Sign in</h1>
+<form method="post" action="/login" class="grid gap-3 max-w-md">
+  <input name="email" type="email" required placeholder="Email" class="px-3 py-2 rounded-xl border" />
+  <input name="password" type="password" required placeholder="Password" class="px-3 py-2 rounded-xl border" />
+  <button class="px-4 py-2 rounded-xl bg-gray-900 text-white">Sign in</button>
+</form>
+
+// ===== views/auth_signup.ejs =====
+<% layout('layout') %>
+<h1 class="text-2xl font-bold mb-4">Create account</h1>
+<form method="post" action="/signup" class="grid gap-3 max-w-md">
+  <input name="name" required placeholder="Username (unique)" class="px-3 py-2 rounded-xl border" />
+  <input name="email" type="email" required placeholder="Email" class="px-3 py-2 rounded-xl border" />
+  <input name="password" type="password" required placeholder="Password" class="px-3 py-2 rounded-xl border" />
+  <button class="px-4 py-2 rounded-xl bg-gray-900 text-white">Sign up</button>
+</form>
+
+// ===== views/dashboard.ejs =====
+<% layout('layout') %>
+<div class="flex items-center justify-between mb-4">
+  <h1 class="text-2xl font-bold">Your repositories</h1>
+  <a href="/repo/new" class="px-3 py-2 rounded-xl bg-gray-900 text-white">New</a>
+</div>
+<ul class="grid gap-3">
+  <% if (!repos.length) { %>
+    <li class="text-gray-600">No repositories yet.</li>
+  <% } %>
+  <% repos.forEach(r => { %>
+    <li class="bg-white border rounded-xl p-4 flex items-center justify-between">
+      <div>
+        <a class="font-semibold hover:underline" href="/@<%= me.name %>/<%= r.name %>"><%= r.name %></a>
+        <div class="text-sm text-gray-500"><%= r.isPrivate ? 'Private' : 'Public' %> · created <%= dayjs(r.createdAt).fromNow() %></div>
+      </div>
+      <div class="text-sm text-gray-600 w-1/2 truncate"><%= r.description || '' %></div>
+    </li>
+  <% }) %>
+</ul>
+
+// ===== views/repo_create.ejs =====
+<% layout('layout') %>
+<h1 class="text-2xl font-bold mb-4">Create a new repository</h1>
+<form method="post" class="grid gap-3 max-w-xl">
+  <label class="grid gap-1">
+    <span>Name</span>
+    <input name="name" required placeholder="my-repo" class="px-3 py-2 rounded-xl border" />
+  </label>
+  <label class="grid gap-1">
+    <span>Description</span>
+    <textarea name="description" rows="3" class="px-3 py-2 rounded-xl border"></textarea>
+  </label>
+  <label class="flex items-center gap-3">
+    <input type="radio" name="visibility" value="public" checked /> Public
+    <input type="radio" name="visibility" value="private" class="ml-6" /> Private
+  </label>
+  <button class="px-4 py-2 rounded-xl bg-gray-900 text-white">Create repository</button>
+</form>
+
+// ===== views/profile.ejs =====
+<% layout('layout') %>
+<h1 class="text-2xl font-bold mb-4">@<%= owner.name %></h1>
+<ul class="grid gap-3">
+  <% if (!repos.length) { %>
+    <li class="text-gray-600">No public repositories.</li>
+  <% } %>
+  <% repos.forEach(r => { %>
+    <li class="bg-white border rounded-xl p-4 flex items-center justify-between">
+      <a class="font-semibold hover:underline" href="/@<%= owner.name %>/<%= r.name %>"><%= r.name %></a>
+      <div class="text-sm text-gray-500"><%= r.description || '' %></div>
+    </li>
+  <% }) %>
+</ul>
+
+// ===== views/repo_view.ejs =====
+<% layout('layout') %>
+<div class="mb-4 flex items-center justify-between">
+  <div>
+    <h1 class="text-2xl font-bold">@<%= owner.name %>/<%= repo.name %></h1>
+    <div class="text-sm text-gray-500"><%= repo.isPrivate ? 'Private' : 'Public' %></div>
+  </div>
+  <% if (me && me.id === owner.id) { %>
+    <form action="/@<%= owner.name %>/<%= repo.name %>/upload" method="post" enctype="multipart/form-data" class="flex items-center gap-2">
+      <input type="file" name="file" class="text-sm" />
+      <button class="px-3 py-2 rounded-xl bg-gray-900 text-white">Upload</button>
+    </form>
+  <% } %>
+</div>
+
+<div class="bg-white border rounded-xl overflow-hidden">
+  <div class="p-3 border-b flex items-center justify-between">
+    <div class="font-semibold">Files</div>
+    <% if (me && me.id === owner.id) { %>
+      <form action="/@<%= owner.name %>/<%= repo.name %>/new-file" method="post" class="flex gap-2">
+        <input name="path" placeholder="path/to/file.txt or dir/" class="px-3 py-2 rounded-xl border" />
+        <button class="px-3 py-2 rounded-xl bg-gray-100">Add</button>
+      </form>
+    <% } %>
+  </div>
+  <ul class="divide-y">
+    <% files.forEach(f => { %>
+      <li class="p-3 flex items-center justify-between">
+        <a class="font-mono hover:underline" href="/@<%= owner.name %>/<%= repo.name %>/<%= f.isDir ? 'tree' : 'blob' %>/<%= f.path %>">
+          <%= f.path %>
+        </a>
+        <% if (!f.isDir) { %>
+          <a class="text-sm text-gray-500 hover:underline" href="/@<%= owner.name %>/<%= repo.name %>/history/<%= f.path %>">history</a>
+        <% } %>
+      </li>
+    <% }) %>
+  </ul>
+</div>
+
+<% if (readmeHtml) { %>
+  <div class="mt-6 bg-white border rounded-xl p-4">
+    <div class="text-sm text-gray-500 mb-2">README.md</div>
+    <div class="prose max-w-none"><%- readmeHtml %></div>
+  </div>
+<% } %>
+
+// ===== views/file_view.ejs =====
+<% layout('layout') %>
+<div class="flex items-center justify-between mb-3">
+  <div>
+    <h1 class="text-xl font-semibold"><%= file.path %></h1>
+    <div class="text-sm text-gray-500">in @<%= owner.name %>/<%= repo.name %></div>
+  </div>
+  <% if (me && me.id === owner.id) { %>
+    <a class="px-3 py-2 rounded-xl bg-gray-900 text-white" href="/@<%= owner.name %>/<%= repo.name %>/edit/<%= file.path %>">Edit</a>
+  <% } %>
+</div>
+
+<% if (history) { %>
+  <h2 class="text-lg font-semibold mb-2">History</h2>
+  <ul class="bg-white border rounded-xl divide-y">
+    <% history.forEach(h => { %>
+      <li class="p-3 flex items-center justify-between">
+        <div>
+          <div class="font-medium"><%= h.message || 'update' %></div>
+          <div class="text-sm text-gray-500"><%= h.authorName || 'unknown' %> · <%= h.createdAt %></div>
+        </div>
+        <code class="text-xs text-gray-500">v#<%= h.id %></code>
+      </li>
+    <% }) %>
+  </ul>
+<% } else { %>
+  <div class="bg-white border rounded-xl p-4 overflow-x-auto">
+    <pre><code><%- content %></code></pre>
+  </div>
+<% } %>
+
+// ===== views/file_edit.ejs =====
+<% layout('layout') %>
+<h1 class="text-2xl font-bold mb-4">Edit <%= file.path %></h1>
+<form method="post" class="grid gap-3">
+  <textarea name="content" rows="20" class="font-mono px-3 py-2 rounded-xl border"><%- content %></textarea>
+  <input name="message" placeholder="Commit message" class="px-3 py-2 rounded-xl border" />
+  <button class="px-4 py-2 rounded-xl bg-gray-900 text-white">Save changes</button>
+</form>
