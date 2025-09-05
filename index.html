@@ -1,0 +1,406 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>MOrehost — Ultra Pro Single‑File IDE</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Cdefs/%3E%3Crect rx='14' ry='14' width='64' height='64' fill='%23000'/%3E%3Cpath fill='%23fff' d='M14 20h15a7 7 0 1 1 0 14H22v10h-8zm8 8h7a3 3 0 1 0 0-6h-7zM34 20h8v24h8v8H34z'/%3E%3C/svg%3E"/>
+  <!-- TailwindCSS CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- Icons -->
+  <script src="https://unpkg.com/lucide@latest"></script>
+  <!-- Markdown + Highlight -->
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css"/>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+  <!-- Monaco Editor -->
+  <script>
+    window.MonacoEnvironment = { getWorkerUrl: function () {
+      const code = `self.MonacoEnvironment = { baseUrl: 'https://cdn.jsdelivr.net/npm/monaco-editor@0.47.0/min/' };\nimportScripts('https://cdn.jsdelivr.net/npm/monaco-editor@0.47.0/min/vs/base/worker/workerMain.js');`;
+      return URL.createObjectURL(new Blob([code], { type: 'text/javascript' }));
+    }};
+  </script>
+  <script src="https://cdn.jsdelivr.net/npm/monaco-editor@0.47.0/min/vs/loader.min.js"></script>
+  <!-- Pyodide (Python in browser) -->
+  <script src="https://cdn.jsdelivr.net/pyodide/v0.24.1/full/pyodide.js"></script>
+  <!-- JSZip for import/export project -->
+  <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
+  <!-- IndexedDB helper -->
+  <script src="https://cdn.jsdelivr.net/npm/idb-keyval@6/dist/umd.js"></script>
+  <style>
+    /* Custom tweaks */
+    .scrollbar-thin::-webkit-scrollbar{height:8px;width:8px}
+    .scrollbar-thin::-webkit-scrollbar-thumb{background:#e5e7eb;border-radius:9999px}
+    .monaco-editor, .monaco-editor-background { border-radius: 1rem; }
+    pre code { white-space: pre; }
+  </style>
+</head>
+<body class="h-screen bg-gray-50 text-gray-900">
+  <!-- Top Nav -->
+  <header class="border-b bg-white sticky top-0 z-40">
+    <div class="max-w-7xl mx-auto px-4 py-3 flex items-center justify-between">
+      <div class="flex items-center gap-3">
+        <svg class="w-7 h-7" viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg"><rect rx="14" ry="14" width="64" height="64" fill="#111"/><path fill="#fff" d="M14 20h15a7 7 0 1 1 0 14H22v10h-8zm8 8h7a3 3 0 1 0 0-6h-7zM34 20h8v24h8v8H34z"/></svg>
+        <span class="font-bold text-xl">MOrehost</span>
+        <span class="text-gray-400">· Single‑file IDE</span>
+      </div>
+      <div class="flex items-center gap-2">
+        <button id="btn-new" class="px-3 py-1.5 rounded-xl bg-gray-900 text-white">New</button>
+        <button id="btn-save" class="px-3 py-1.5 rounded-xl bg-gray-100">Save</button>
+        <button id="btn-export" class="px-3 py-1.5 rounded-xl bg-gray-100">Export</button>
+        <label class="px-3 py-1.5 rounded-xl bg-gray-100 cursor-pointer">
+          <input id="import-input" type="file" accept=".zip" class="hidden"/>Import
+        </label>
+      </div>
+    </div>
+  </header>
+
+  <!-- Main layout -->
+  <div class="max-w-7xl mx-auto h-[calc(100vh-64px)] px-4 py-4 grid grid-cols-12 gap-4">
+    <!-- LEFT: Explorer -->
+    <aside class="col-span-3 bg-white border rounded-2xl p-3 flex flex-col overflow-hidden">
+      <div class="flex items-center justify-between mb-2">
+        <div class="font-semibold">Explorer</div>
+        <div class="flex gap-1">
+          <button id="btn-new-file" title="New file" class="p-1 rounded-lg hover:bg-gray-100">
+            <i data-lucide="file-plus" class="w-4 h-4"></i>
+          </button>
+          <button id="btn-new-folder" title="New folder" class="p-1 rounded-lg hover:bg-gray-100">
+            <i data-lucide="folder-plus" class="w-4 h-4"></i>
+          </button>
+        </div>
+      </div>
+      <div id="tree" class="flex-1 overflow-auto scrollbar-thin text-sm"></div>
+    </aside>
+
+    <!-- CENTER: Editor / Preview Tabs -->
+    <section class="col-span-6 flex flex-col gap-3 overflow-hidden">
+      <div class="bg-white border rounded-2xl p-2">
+        <div class="flex items-center gap-2">
+          <div class="font-semibold">Editor</div>
+          <span id="current-path" class="text-xs text-gray-500"></span>
+          <div class="ml-auto flex items-center gap-2">
+            <select id="lang-select" class="px-2 py-1 rounded-lg border text-sm">
+              <option value="auto" selected>Auto</option>
+              <option value="javascript">JavaScript</option>
+              <option value="html">HTML</option>
+              <option value="css">CSS</option>
+              <option value="markdown">Markdown</option>
+              <option value="python">Python</option>
+              <option value="json">JSON</option>
+            </select>
+            <button id="btn-run" class="px-3 py-1.5 rounded-xl bg-gray-900 text-white">Run</button>
+          </div>
+        </div>
+        <div id="editor" class="mt-2 h-[50vh] rounded-xl overflow-hidden"></div>
+      </div>
+
+      <div class="bg-white border rounded-2xl p-2">
+        <div class="flex items-center gap-2">
+          <div class="font-semibold">Preview / Output</div>
+          <div class="ml-auto">
+            <button id="btn-clear-out" class="px-2 py-1 rounded-lg bg-gray-100 text-sm">Clear</button>
+          </div>
+        </div>
+        <div class="mt-2 grid grid-cols-2 gap-3">
+          <iframe id="preview" class="h-[28vh] w-full border rounded-xl"></iframe>
+          <pre id="console" class="h-[28vh] w-full border rounded-xl p-3 bg-black text-green-300 text-xs overflow-auto"></pre>
+        </div>
+      </div>
+    </section>
+
+    <!-- RIGHT: README / Details -->
+    <aside class="col-span-3 bg-white border rounded-2xl p-3 overflow-auto">
+      <div class="flex items-center justify-between mb-2">
+        <div class="font-semibold">README.md</div>
+        <button id="btn-open-readme" class="px-2 py-1 rounded-lg bg-gray-100 text-sm">Open</button>
+      </div>
+      <article id="readme" class="prose max-w-none"></article>
+    </aside>
+  </div>
+
+  <!-- Templates / toasts -->
+  <div id="toast" class="fixed bottom-4 left-1/2 -translate-x-1/2 px-3 py-2 bg-gray-900 text-white text-sm rounded-xl hidden">Saved</div>
+
+  <script>
+  // ===== State & Storage (IndexedDB via idb-keyval) =====
+  const { set: idbSet, get: idbGet } = idbKeyval;
+  let project = {
+    name: 'morehost-project',
+    files: { // path -> {type:'file'|'folder', content?:string}
+      'README.md': { type: 'file', content: '# MOrehost\n\nWelcome to MOrehost single-file IDE.\n' },
+      'src/': { type: 'folder' },
+      'src/main.js': { type: 'file', content: 'console.log("Hello MOrehost!")' },
+      'index.html': { type: 'file', content: '<!doctype html>\n<html><body><h1>Hi from MOrehost</h1></body></html>' },
+      'styles.css': { type: 'file', content: 'body{font-family:system-ui}' },
+      'script.py': { type: 'file', content: 'print(\"Hello from Python in browser\")' },
+    },
+    currentPath: 'src/main.js',
+    history: [] // snapshots
+  };
+
+  async function loadProject(){
+    const saved = await idbGet('morehost.project');
+    if(saved){ project = saved; }
+    renderTree();
+    openFile(project.currentPath);
+    renderReadme();
+  }
+  async function persist(){ await idbSet('morehost.project', project); showToast('Saved'); }
+
+  // ===== UI Helpers =====
+  function showToast(msg){ const t = document.getElementById('toast'); t.textContent = msg; t.classList.remove('hidden'); setTimeout(()=>t.classList.add('hidden'), 1200); }
+  function extToLang(path){
+    const ext = (path.split('.').pop()||'').toLowerCase();
+    switch(ext){
+      case 'js': return 'javascript';
+      case 'ts': return 'typescript';
+      case 'html': return 'html';
+      case 'css': return 'css';
+      case 'md': return 'markdown';
+      case 'py': return 'python';
+      case 'json': return 'json';
+      default: return 'plaintext';
+    }
+  }
+
+  // ===== File Tree Rendering =====
+  function pathParts(p){ return p.split('/').filter(Boolean); }
+  function isFolder(p){ return project.files[p] && project.files[p].type === 'folder'; }
+  function childrenOf(dir){
+    const out = [];
+    const prefix = dir === '' ? '' : dir;
+    for(const k of Object.keys(project.files)){
+      if(k === dir) continue;
+      if(dir && !k.startsWith(dir)) continue;
+      const rest = k.slice(prefix.length);
+      if(!rest) continue;
+      if(rest.includes('/')){
+        const name = rest.split('/')[0] + '/';
+        if(!out.includes(prefix + name)) out.push(prefix + name);
+      } else {
+        if(!k.endsWith('/')) out.push(k);
+      }
+    }
+    return out.sort();
+  }
+  function renderTree(){
+    const tree = document.getElementById('tree');
+    tree.innerHTML = '';
+    function row(p){
+      const div = document.createElement('div');
+      const isDir = p.endsWith('/');
+      div.className = 'flex items-center justify-between px-2 py-1 rounded-lg hover:bg-gray-50';
+      const name = p.split('/').filter(Boolean).pop() || p;
+      div.innerHTML = `<div class="flex items-center gap-2"><i data-lucide="${isDir?'folder':'file'}" class="w-4 h-4"></i><button class="text-left truncate hover:underline" data-open="${p}">${name}</button></div>
+      <div class="flex gap-1">${!isDir?`<button class='p-1 rounded hover:bg-gray-100' data-edit='${p}' title='Edit'><i data-lucide="pencil" class="w-3.5 h-3.5"></i></button>`:''}
+      <button class='p-1 rounded hover:bg-gray-100' data-del='${p}' title='Delete'><i data-lucide="trash-2" class="w-3.5 h-3.5"></i></button></div>`;
+      tree.appendChild(div);
+      const kids = childrenOf(p);
+      if(isDir){
+        const wrap = document.createElement('div');
+        wrap.className = 'ml-4 border-l pl-2 my-1';
+        kids.forEach(k=>{ const r = row(k); wrap.appendChild(r); });
+        tree.appendChild(wrap);
+      }
+      return div;
+    }
+    // root listing = top-level children of ''
+    childrenOf('').forEach(k=>row(k));
+    lucide.createIcons();
+  }
+
+  // ===== Monaco Editor Setup =====
+  let editor, monacoInstance;
+  require.config({ paths: { 'vs': 'https://cdn.jsdelivr.net/npm/monaco-editor@0.47.0/min/vs' } });
+  require(['vs/editor/editor.main'], function(){
+    monacoInstance = window.monaco;
+    editor = monacoInstance.editor.create(document.getElementById('editor'), {
+      value: '// Select a file on the left to start...',
+      language: 'javascript',
+      automaticLayout: true,
+      theme: 'vs',
+      minimap: { enabled: false },
+      fontSize: 14,
+      roundedSelection: true,
+    });
+    loadProject();
+  });
+
+  function openFile(p){
+    if(!project.files[p] || project.files[p].type !== 'file') return;
+    project.currentPath = p;
+    const content = project.files[p].content ?? '';
+    const sel = document.getElementById('lang-select');
+    const lang = sel.value === 'auto' ? extToLang(p) : sel.value;
+    editor.setValue(content);
+    monacoInstance.editor.setModelLanguage(editor.getModel(), lang);
+    document.getElementById('current-path').textContent = p;
+  }
+
+  // ===== README Render =====
+  function renderReadme(){
+    const el = document.getElementById('readme');
+    const md = project.files['README.md']?.content || '';
+    el.innerHTML = marked.parse(md);
+    el.querySelectorAll('pre code').forEach(block => hljs.highlightElement(block));
+  }
+
+  // ===== Event Listeners =====
+  document.getElementById('tree').addEventListener('click', (e)=>{
+    const open = e.target.closest('[data-open]')?.dataset.open;
+    const edit = e.target.closest('[data-edit]')?.dataset.edit;
+    const del = e.target.closest('[data-del]')?.dataset.del;
+    if(open){
+      if(!open.endsWith('/')) openFile(open);
+    } else if(edit){
+      openFile(edit);
+    } else if(del){
+      if(confirm('Delete ' + del + '?')){
+        delete project.files[del];
+        // remove nested if folder
+        if(del.endsWith('/')){
+          Object.keys(project.files).forEach(k=>{ if(k.startsWith(del)) delete project.files[k]; });
+        }
+        renderTree();
+        persist();
+      }
+    }
+  });
+
+  document.getElementById('btn-new-file').addEventListener('click', ()=>{
+    const p = prompt('File path (e.g., src/app.js)');
+    if(!p) return;
+    if(project.files[p]) return alert('Exists');
+    project.files[p] = { type: 'file', content: '' };
+    renderTree();
+    openFile(p);
+    persist();
+  });
+  document.getElementById('btn-new-folder').addEventListener('click', ()=>{
+    let p = prompt('Folder path (e.g., components/)');
+    if(!p) return;
+    if(!p.endsWith('/')) p += '/';
+    if(project.files[p]) return alert('Exists');
+    project.files[p] = { type: 'folder' };
+    renderTree();
+    persist();
+  });
+
+  document.getElementById('btn-open-readme').addEventListener('click', ()=> openFile('README.md'));
+  document.getElementById('btn-save').addEventListener('click', ()=>{
+    const p = project.currentPath;
+    if(project.files[p]){
+      project.files[p].content = editor.getValue();
+      // update README preview if needed
+      if(p === 'README.md') renderReadme();
+      persist();
+    }
+  });
+  document.getElementById('btn-new').addEventListener('click', ()=>{
+    if(!confirm('Create a fresh project? This will replace current files (but you can Export before).')) return;
+    project = { name: 'morehost-project', files: { 'README.md': {type:'file', content:'# New Project\n'} }, currentPath: 'README.md', history: [] };
+    renderTree();
+    openFile('README.md');
+    renderReadme();
+    persist();
+  });
+
+  // ===== Run Button: JS/HTML/CSS/Markdown/Python =====
+  let pyodideReady = false, pyodide;
+  (async()=>{ try{ pyodide = await loadPyodide(); pyodideReady = true; }catch(e){ console.warn('Pyodide load failed', e);} })();
+
+  function setConsole(text){ const c = document.getElementById('console'); c.textContent = text; c.scrollTop = c.scrollHeight; }
+  function appendConsole(line){ const c = document.getElementById('console'); c.textContent += line + '\n'; c.scrollTop = c.scrollHeight; }
+  document.getElementById('btn-clear-out').addEventListener('click', ()=> setConsole(''));
+
+  function runJS(code){
+    setConsole('');
+    const iframe = document.getElementById('preview');
+    const doc = iframe.contentDocument;
+    doc.open();
+    doc.write('<script>window.parent.postMessage({type:\'morehost-console\', msg:\'JS running...\'},"*");\\n' +
+      'console.log = (...a)=>parent.postMessage({type:"morehost-console", msg:a.join(" ")},"*");\\n' +
+      'console.error = (...a)=>parent.postMessage({type:"morehost-console", msg:"ERROR: "+a.join(" ")},"*");<' + '/script>');
+    doc.write('<script>try{'+ code.replace(/<\//g,'<\\/') +'}catch(e){parent.postMessage({type:"morehost-console", msg:"ERROR: "+e.message},"*");}<' + '/script>');
+    doc.close();
+  }
+  function runHTML(html){
+    setConsole('');
+    const iframe = document.getElementById('preview');
+    iframe.srcdoc = html;
+    appendConsole('HTML rendered in preview ▶');
+  }
+  async function runPython(code){
+    if(!pyodideReady){ appendConsole('Python loading... please wait'); return; }
+    try {
+      setConsole('');
+      let out = '';
+      pyodide.setStdout({ batched: (s)=>{ out += s; }});
+      pyodide.setStderr({ batched: (s)=>{ out += s; }});
+      await pyodide.runPythonAsync(code);
+      appendConsole(out || 'Python finished.');
+    } catch(e){ appendConsole('ERROR: ' + e.message); }
+  }
+
+  window.addEventListener('message', (e)=>{
+    if(e.data && e.data.type === 'morehost-console') appendConsole(String(e.data.msg));
+  });
+
+  document.getElementById('btn-run').addEventListener('click', ()=>{
+    // ensure current file saved to state
+    const p = project.currentPath; if(project.files[p]) project.files[p].content = editor.getValue();
+
+    const sel = document.getElementById('lang-select').value;
+    const lang = sel === 'auto' ? extToLang(p) : sel;
+    const code = project.files[p]?.content || '';
+    if(lang === 'javascript') return runJS(code);
+    if(lang === 'html') return runHTML(code);
+    if(lang === 'markdown') { document.getElementById('preview').srcdoc = marked.parse(code); setConsole('Markdown rendered ▶'); return; }
+    if(lang === 'python') return runPython(code);
+    if(lang === 'css') { const html = `<!doctype html><html><head><style>${code}</style></head><body><h1>CSS applied</h1></body></html>`; return runHTML(html); }
+    if(lang === 'json') { try{ JSON.parse(code); setConsole('Valid JSON ✔'); } catch(e){ setConsole('Invalid JSON: '+e.message);} return; }
+    // default
+    setConsole('Nothing to run for this file.');
+  });
+
+  // ===== Export / Import =====
+  document.getElementById('btn-export').addEventListener('click', async ()=>{
+    const zip = new JSZip();
+    for(const [p,meta] of Object.entries(project.files)){
+      if(meta.type==='file') zip.file(p, meta.content || '');
+      else zip.folder(p.replace(/\/$/,''));
+    }
+    const blob = await zip.generateAsync({type:'blob'});
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = (project.name || 'morehost') + '.zip';
+    a.click();
+  });
+  document.getElementById('import-input').addEventListener('change', async (e)=>{
+    const file = e.target.files[0]; if(!file) return;
+    const zip = await JSZip.loadAsync(file);
+    const newFiles = {};
+    const promises = [];
+    zip.forEach((rel, zipEntry)=>{
+      if(zipEntry.dir){ newFiles[rel.endsWith('/')?rel:rel+'/'] = { type:'folder' }; }
+      else { promises.push(zipEntry.async('string').then(txt=>{ newFiles[rel] = { type:'file', content: txt }; })); }
+    });
+    await Promise.all(promises);
+    project.files = newFiles;
+    project.currentPath = Object.keys(newFiles).find(k=>!k.endsWith('/')) || 'README.md';
+    renderTree();
+    openFile(project.currentPath);
+    renderReadme();
+    persist();
+  });
+
+  // ===== Keep README live when switching language select =====
+  document.getElementById('lang-select').addEventListener('change', ()=>{
+    const p = project.currentPath;
+    openFile(p);
+  });
+
+  </script>
+</body>
+</html>
