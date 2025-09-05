@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>MoreHost</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    /* Firebase-like logo pulse */
+    @keyframes pulseGlow {
+      0%, 100% { transform: scale(1); filter: drop-shadow(0 0 5px #00f6ff); }
+      50% { transform: scale(1.1); filter: drop-shadow(0 0 15px #00f6ff); }
+    }
+    .logo-anim { animation: pulseGlow 2s infinite; }
+    /* Space background for auth */
+    .space-bg {
+      background: radial-gradient(ellipse at bottom, #1b2735 0%, #090a0f 100%);
+      overflow: hidden;
+    }
+    .space-bg::before {
+      content: "";
+      position: absolute;
+      width: 200%;
+      height: 200%;
+      background: transparent url("https://www.transparenttextures.com/patterns/stardust.png") repeat;
+      animation: moveStars 60s linear infinite;
+    }
+    @keyframes moveStars { from {transform: translateY(0);} to {transform: translateY(-100px);} }
+  </style>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.34.1/min/vs/loader.min.js"></script>
+</head>
+<body class="bg-gray-900 text-white">
+  <!-- Loading Screen -->
+  <div id="loading" class="fixed inset-0 flex items-center justify-center bg-black z-50">
+    <div class="text-center">
+      <div class="text-4xl font-bold text-cyan-400 logo-anim">MoreHost</div>
+      <div class="mt-4 animate-pulse text-gray-400">Loading...</div>
+    </div>
+  </div>
+
+  <!-- Landing Page -->
+  <div id="landing" class="hidden h-screen flex flex-col items-center justify-center bg-gradient-to-br from-purple-800 to-indigo-900">
+    <h1 class="text-5xl font-extrabold mb-8">Welcome to <span class="text-cyan-400">MoreHost</span></h1>
+    <div class="space-x-4">
+      <button onclick="showAuth('signup')" class="px-6 py-3 bg-cyan-500 rounded-xl shadow-lg">Sign Up</button>
+      <button onclick="showAuth('signin')" class="px-6 py-3 bg-gray-700 rounded-xl shadow-lg">Sign In</button>
+    </div>
+  </div>
+
+  <!-- Auth Page -->
+  <div id="auth" class="hidden h-screen flex items-center justify-center relative space-bg">
+    <div class="bg-gray-800 bg-opacity-90 p-8 rounded-2xl w-96 text-center z-10">
+      <h2 id="authTitle" class="text-2xl font-bold mb-4">Sign Up</h2>
+      <input id="authName" placeholder="Enter Name" class="w-full mb-3 p-2 rounded bg-gray-900 border border-gray-600" />
+      <input id="authPass" type="password" placeholder="Enter Password" class="w-full mb-3 p-2 rounded bg-gray-900 border border-gray-600" />
+      <button onclick="handleAuth()" class="w-full py-2 bg-cyan-500 rounded">Continue</button>
+    </div>
+  </div>
+
+  <!-- Dashboard -->
+  <div id="dashboard" class="hidden min-h-screen bg-gray-950 p-6">
+    <div class="flex justify-between items-center mb-6">
+      <h2 class="text-3xl font-bold">Projects</h2>
+      <button onclick="newProject()" class="px-4 py-2 bg-cyan-600 rounded">New Project</button>
+    </div>
+    <div id="projectList" class="grid grid-cols-1 md:grid-cols-3 gap-4"></div>
+  </div>
+
+  <!-- Workspace -->
+  <div id="workspace" class="hidden h-screen flex flex-col">
+    <div class="flex items-center bg-gray-800 px-4 py-2">
+      <div class="font-bold text-xl flex-1" id="workspaceTitle">Workspace</div>
+      <button onclick="addFile()" class="mr-2 px-3 py-1 bg-cyan-500 rounded">Add File</button>
+      <button onclick="previewProject()" class="px-3 py-1 bg-green-500 rounded">Preview</button>
+    </div>
+    <div class="flex flex-1">
+      <div id="fileExplorer" class="w-1/4 bg-gray-900 p-2 overflow-y-auto"></div>
+      <div id="editor" class="flex-1"></div>
+    </div>
+    <div id="console" class="h-32 bg-black text-green-400 p-2 overflow-y-auto"></div>
+  </div>
+
+  <!-- Preview Modal -->
+  <div id="previewModal" class="hidden fixed inset-0 bg-black bg-opacity-80 flex items-center justify-center z-50">
+    <div class="bg-white w-11/12 h-5/6 rounded-xl overflow-hidden">
+      <iframe id="previewFrame" class="w-full h-full"></iframe>
+    </div>
+    <button onclick="closePreview()" class="absolute top-4 right-4 px-4 py-2 bg-red-600 text-white rounded">Close</button>
+  </div>
+
+  <script>
+    // Hide loading after 3s
+    window.addEventListener('load', () => {
+      setTimeout(() => {
+        document.getElementById('loading').style.display = 'none';
+        document.getElementById('landing').classList.remove('hidden');
+      }, 3000);
+    });
+
+    let authMode = 'signup';
+    function showAuth(mode) {
+      authMode = mode;
+      document.getElementById('landing').classList.add('hidden');
+      document.getElementById('auth').classList.remove('hidden');
+      document.getElementById('authTitle').innerText = mode === 'signup' ? 'Sign Up' : 'Sign In';
+    }
+
+    function handleAuth() {
+      const name = document.getElementById('authName').value;
+      const pass = document.getElementById('authPass').value;
+      if (!name || !pass) return alert('Fill all fields');
+      if (authMode === 'signup') {
+        localStorage.setItem('user', JSON.stringify({ name, pass }));
+        alert('Account created');
+      } else {
+        const user = JSON.parse(localStorage.getItem('user')||'{}');
+        if (user.name===name && user.pass===pass){
+          alert('Welcome back '+name);
+        } else return alert('Invalid login');
+      }
+      document.getElementById('auth').classList.add('hidden');
+      document.getElementById('dashboard').classList.remove('hidden');
+    }
+
+    let projects = [];
+    function newProject() {
+      const pname = prompt('Enter project name:');
+      if (!pname) return;
+      projects.push({ name:pname, files:{} });
+      renderProjects();
+    }
+    function renderProjects() {
+      const list = document.getElementById('projectList');
+      list.innerHTML='';
+      projects.forEach((p,i)=>{
+        const div=document.createElement('div');
+        div.className='bg-gray-800 p-4 rounded cursor-pointer hover:bg-gray-700';
+        div.innerText=p.name;
+        div.onclick=()=>openWorkspace(i);
+        list.appendChild(div);
+      });
+    }
+
+    let currentProject=null;
+    let editorInstance;
+    function openWorkspace(index){
+      currentProject=projects[index];
+      document.getElementById('dashboard').classList.add('hidden');
+      document.getElementById('workspace').classList.remove('hidden');
+      document.getElementById('workspaceTitle').innerText=currentProject.name;
+      require.config({ paths: { 'vs': 'https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.34.1/min/vs' }});
+      require(["vs/editor/editor.main"], function(){
+        editorInstance=monaco.editor.create(document.getElementById('editor'),{
+          value:'// Start coding...',
+          language:'javascript',
+          theme:'vs-dark'
+        });
+      });
+    }
+
+    function addFile(){
+      const fname=prompt('File name:');
+      if(!fname) return;
+      currentProject.files[fname]='';
+      renderFiles();
+    }
+    function renderFiles(){
+      const exp=document.getElementById('fileExplorer');
+      exp.innerHTML='';
+      Object.keys(currentProject.files).forEach(f=>{
+        const div=document.createElement('div');
+        div.className='p-1 hover:bg-gray-700 cursor-pointer';
+        div.innerText=f;
+        div.onclick=()=>{
+          editorInstance.setValue(currentProject.files[f]);
+          editorInstance.onDidChangeModelContent(()=>{
+            currentProject.files[f]=editorInstance.getValue();
+          });
+        };
+        exp.appendChild(div);
+      });
+    }
+
+    function previewProject(){
+      let html="";
+      for(const [fname,content] of Object.entries(currentProject.files)){
+        if(fname.endsWith('.html')) html+=content;
+        else if(fname.endsWith('.css')) html+=`<style>${content}</style>`;
+        else if(fname.endsWith('.js')) html+=`<script>${content}<\/script>`;
+      }
+      const frame=document.getElementById('previewFrame').contentWindow.document;
+      frame.open();
+      frame.write(html||'<h1>No files to preview</h1>');
+      frame.close();
+      document.getElementById('previewModal').classList.remove('hidden');
+    }
+    function closePreview(){
+      document.getElementById('previewModal').classList.add('hidden');
+    }
+  </script>
+</body>
+</html>
